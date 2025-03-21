@@ -39,7 +39,7 @@ with open(filename, 'w') as file:
             value = struct.unpack('f', chunk)[0] #Convert 4 bytes into their floating point representation
             file.write(f"{value}\n")
 de_init(stm)
-#%%
+#%% ChatGPT generated code to see spectrum and time-domain signal
 import numpy as np
 import matplotlib.pyplot as plt
 

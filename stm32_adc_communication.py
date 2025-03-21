@@ -79,3 +79,12 @@ plt.xlabel("Frequency [Hz]")
 plt.ylabel("Intensity")
 plt.title("Frequency Spectrum")
 plt.show()
+#%%
+from scipy import signal
+b = [1,0,0,0,0,0,-1]
+a = 1
+w,h = signal.freqz(b, a, worN=512, fs=fs)
+
+plt.figure()
+plt.plot(w,(abs(h)))
+

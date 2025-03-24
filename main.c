@@ -33,8 +33,7 @@
 /* USER CODE BEGIN PD */
 #define BUFFER_SIZE 32
 #define HALF_BUFFER_SIZE (BUFFER_SIZE / 2)
-#define MAX_SAMPLES 4000
-#define FILTER_ORDER 6
+#define FILTER_ORDER 0
 #define FILTER_LENGTH (FILTER_ORDER+1)
 #define FIR_LENGTH (HALF_BUFFER_SIZE + FILTER_LENGTH - 1)
 /* USER CODE END PD */
@@ -53,12 +52,15 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+uint8_t c[1] = {0};
+uint32_t MAX_SAMPLES = 4000;
 volatile uint16_t adc_data[BUFFER_SIZE] = {0};
 volatile float32_t uart_data0[HALF_BUFFER_SIZE] = {0};
 volatile float32_t uart_data1[HALF_BUFFER_SIZE] = {0};
 volatile uint8_t transmit_flag = 0;
 volatile uint16_t timer2_counter = 0;
-float32_t fir_coeffs[FILTER_LENGTH] = {1};
+//float32_t fir_coeffs[FILTER_LENGTH] = {1,0,0,0,0,0,-1}; //6th order comb filter
+float32_t fir_coeffs[FILTER_LENGTH] = {1}; //1st order all-pass filter
 float32_t fir_state[FIR_LENGTH] = {0};
 float32_t fir_in0[HALF_BUFFER_SIZE] = {0};
 float32_t fir_in1[HALF_BUFFER_SIZE] = {0};
@@ -146,8 +148,15 @@ int main(void)
   reverse_array(fir_coeffs, FILTER_LENGTH);
   arm_fir_init_f32(&fir0, FILTER_LENGTH, fir_coeffs, fir_state, HALF_BUFFER_SIZE);
   arm_fir_init_f32(&fir1, FILTER_LENGTH, fir_coeffs, fir_state, HALF_BUFFER_SIZE);
-  uint8_t c[1] = {0};
   HAL_UART_Receive(&huart1, c, sizeof(char), HAL_MAX_DELAY); //Wait to receive start from python
+  switch(c[0]){
+  	  case 1: //Are we in "writing to file" mode?
+  		  MAX_SAMPLES = 4000;
+  		  break;
+  	  case 2: //Or are we in "real-time plotting" mode?
+  		  MAX_SAMPLES = 100000;
+  		  break;
+  }
   HAL_ADC_Start_DMA(&hadc1, (uint8_t*)adc_data, BUFFER_SIZE);
   HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
@@ -336,7 +345,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 57600;
+  huart1.Init.BaudRate = 115200;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;

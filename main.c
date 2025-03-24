@@ -33,7 +33,7 @@
 /* USER CODE BEGIN PD */
 #define BUFFER_SIZE 32
 #define HALF_BUFFER_SIZE (BUFFER_SIZE / 2)
-#define FILTER_ORDER 0
+#define FILTER_ORDER 6
 #define FILTER_LENGTH (FILTER_ORDER+1)
 #define FIR_LENGTH (HALF_BUFFER_SIZE + FILTER_LENGTH - 1)
 /* USER CODE END PD */
@@ -56,16 +56,14 @@ uint8_t c[1] = {0};
 uint32_t MAX_SAMPLES = 4000;
 volatile uint16_t adc_data[BUFFER_SIZE] = {0};
 volatile float32_t uart_data0[HALF_BUFFER_SIZE] = {0};
-volatile float32_t uart_data1[HALF_BUFFER_SIZE] = {0};
 volatile uint8_t transmit_flag = 0;
 volatile uint32_t timer2_counter = 0;
-//float32_t fir_coeffs[FILTER_LENGTH] = {1,0,0,0,0,0,-1}; //6th order comb filter
-float32_t fir_coeffs[FILTER_LENGTH] = {1}; //1st order all-pass filter
+float32_t fir_coeffs[FILTER_LENGTH] = {1,0,0,0,0,0,-1}; //6th order comb filter
+//float32_t fir_coeffs[FILTER_LENGTH] = {1}; //1st order all-pass filter
 float32_t fir_state[FIR_LENGTH] = {0};
 float32_t fir_in0[HALF_BUFFER_SIZE] = {0};
 float32_t fir_in1[HALF_BUFFER_SIZE] = {0};
 arm_fir_instance_f32 fir0;
-arm_fir_instance_f32 fir1;
 
 /* USER CODE END PV */
 
@@ -147,7 +145,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
   reverse_array(fir_coeffs, FILTER_LENGTH);
   arm_fir_init_f32(&fir0, FILTER_LENGTH, fir_coeffs, fir_state, HALF_BUFFER_SIZE);
-  arm_fir_init_f32(&fir1, FILTER_LENGTH, fir_coeffs, fir_state, HALF_BUFFER_SIZE);
   HAL_UART_Receive(&huart1, c, sizeof(char), HAL_MAX_DELAY); //Wait to receive start from python
   switch(c[0]){
   	  case 1: //Are we in "writing to file" mode?
@@ -173,8 +170,8 @@ int main(void)
 	  		  break;
 	  	  case 2: //Transmit buffer1
 	  		  transmit_flag = 0;
-	  		  arm_fir_f32(&fir1, fir_in1, uart_data1, HALF_BUFFER_SIZE);
-	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data1, sizeof(float)*HALF_BUFFER_SIZE);
+	  		  arm_fir_f32(&fir0, fir_in1, uart_data0, HALF_BUFFER_SIZE);
+	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0, sizeof(float)*HALF_BUFFER_SIZE);
 	  		  break;
 	  	  default:
 	  }

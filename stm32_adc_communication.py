@@ -88,7 +88,7 @@ t = t[:data_length]
 # Plot time-domain signal
 plt.figure()
 plt.plot(t, data * 3 / 2**12)
-plt.xlim([0, 3])
+plt.xlim([0, 0.1])
 plt.xlabel("Time [s]")
 plt.ylabel("Amplitude")
 plt.title("Time-Domain Signal")

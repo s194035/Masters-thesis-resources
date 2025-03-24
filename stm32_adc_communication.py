@@ -4,8 +4,10 @@
 
 import serial
 import struct
+import matplotlib.pyplot as plt
+import collections
 
-def init(port, baud: int = 57600):
+def init(port, baud: int = 115200):
     ser = serial.Serial(port, baud, timeout = 0.1) #0.1 is the timeout value
     return ser
 
@@ -16,19 +18,32 @@ port = "/dev/ttyACM0" #Needs to be looked up using dmesg | grep tty
 UART_BUFFER_SIZE = 16
 UART_BYTE_SIZE = UART_BUFFER_SIZE * 4
 MAX_SAMPLES = 4000
+sample_number = 0 #Used for real-time plotting
+x_points = collections.deque(maxlen = 1000) #For real-time plotting
+y_points = collections.deque(maxlen = 1000) #For real-time plotting
+update = 0
 filename = "adc_values.txt"
+input = int(input("Mode 1 or 2?: "))
+match input:
+    case 1:
+        MAX_SAMPLES = 4000
+    case 2:
+        MAX_SAMPLES = 100000
+if(input == 2):
+    plt.ion()
+    fig, ax = plt.subplots()
+    line, = ax.plot([], [], 'b-')  # 'bo-' = blue circles with line
 
 
 stm = init(port)
 stm.flush()
-stm.write(bytes([1]))
-
+stm.write(bytes([input]))
 #For receiving multiple floats and store in a file
 with open(filename, 'w') as file:
     counter = 0
     while(counter < MAX_SAMPLES):
         #data = stm.readline(UART_BYTE_SIZE) #Don't use this function. I have spent 6 hours trying to get this damn function to work man.
-        data= stm.read(UART_BYTE_SIZE)
+        data = stm.read(UART_BYTE_SIZE)
         counter = counter + UART_BUFFER_SIZE
         if len(data) != UART_BYTE_SIZE:
             stm.flush()
@@ -37,7 +52,22 @@ with open(filename, 'w') as file:
         chunks = [data[i:i+4] for i in range(0, len(data), 4)]
         for i, chunk in enumerate(chunks):
             value = struct.unpack('f', chunk)[0] #Convert 4 bytes into their floating point representation
-            file.write(f"{value}\n")
+            if(input == 1): #Mode 1 we write to a file
+                file.write(f"{value}\n")
+                
+            if(input == 2): #Mode 2 we plot in real time. This code is taken from chatGPT
+                x_points.append(sample_number)
+                y_points.append(value)
+                update = update + 1
+                sample_number = sample_number + 1
+                if(update == 100):
+                    update = 0
+                    line.set_xdata(x_points)
+                    line.set_ydata(y_points)
+                    ax.relim()
+                    ax.autoscale_view()
+                    plt.draw()
+                    plt.pause(0.01)
 de_init(stm)
 #%% ChatGPT generated code to see spectrum and time-domain signal
 import numpy as np
@@ -58,7 +88,7 @@ t = t[:data_length]
 # Plot time-domain signal
 plt.figure()
 plt.plot(t, data * 3 / 2**12)
-plt.xlim([0, 0.1])
+plt.xlim([0, 3])
 plt.xlabel("Time [s]")
 plt.ylabel("Amplitude")
 plt.title("Time-Domain Signal")

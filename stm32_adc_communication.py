@@ -15,20 +15,21 @@ def de_init(ser: serial.Serial):
     ser.close()
 
 port = "/dev/ttyACM0" #Needs to be looked up using dmesg | grep tty
-UART_BUFFER_SIZE = 16
+#port = "/dev/ttyUSB0" #Now we use USB to uart converter
+UART_BUFFER_SIZE = 32
 UART_BYTE_SIZE = UART_BUFFER_SIZE * 4
-MAX_SAMPLES = 4000
+MAX_SAMPLES = 2000
 sample_number = 0 #Used for real-time plotting
 x_points = collections.deque(maxlen = 1000) #For real-time plotting
 y_points = collections.deque(maxlen = 1000) #For real-time plotting
 update = 0
-filename = "adc_values.txt"
+filename = "Just testing.txt"
 input = int(input("Mode 1 or 2?: "))
 match input:
     case 1:
-        MAX_SAMPLES = 4000
+        MAX_SAMPLES = 2000
     case 2:
-        MAX_SAMPLES = 100000
+        MAX_SAMPLES = 2000
 if(input == 2):
     plt.ion()
     fig, ax = plt.subplots()
@@ -74,7 +75,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load data
-data = np.loadtxt("/home/frederik/Python/adc_values.txt")
+data = np.loadtxt("Just testing.txt")
 
 data_length = len(data)
 fs = 1000  # Sampling frequency
@@ -88,7 +89,7 @@ t = t[:data_length]
 # Plot time-domain signal
 plt.figure()
 plt.plot(t, data * 3 / 2**12)
-plt.xlim([0, 0.1])
+#plt.xlim([0, 0.1])
 plt.xlabel("Time [s]")
 plt.ylabel("Amplitude")
 plt.title("Time-Domain Signal")

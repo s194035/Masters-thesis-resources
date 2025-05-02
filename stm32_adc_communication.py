@@ -16,24 +16,24 @@ def de_init(ser: serial.Serial):
 
 port = "/dev/ttyACM0" #Needs to be looked up using dmesg | grep tty
 #port = "/dev/ttyUSB0" #Now we use USB to uart converter
-UART_BUFFER_SIZE = 32
+UART_BUFFER_SIZE = 16
 UART_BYTE_SIZE = UART_BUFFER_SIZE * 4
 MAX_SAMPLES = 2000
 sample_number = 0 #Used for real-time plotting
 x_points = collections.deque(maxlen = 1000) #For real-time plotting
 y_points = collections.deque(maxlen = 1000) #For real-time plotting
 update = 0
-filename = "Just testing.txt"
+filename = "newboard_undrivencable.txt"
 input = int(input("Mode 1 or 2?: "))
 match input:
     case 1:
-        MAX_SAMPLES = 2000
+        MAX_SAMPLES = 10000
     case 2:
-        MAX_SAMPLES = 2000
+        MAX_SAMPLES = 50000
 if(input == 2):
     plt.ion()
     fig, ax = plt.subplots()
-    line, = ax.plot([], [], 'b-')  # 'bo-' = blue circles with line
+    line, = ax.plot([], [], 'b-',linewidth=0.5)
 
 
 stm = init(port)
@@ -75,7 +75,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load data
-data = np.loadtxt("Just testing.txt")
+data = np.loadtxt("newboard_undrivencable.txt")
 
 data_length = len(data)
 fs = 1000  # Sampling frequency
@@ -90,6 +90,16 @@ t = t[:data_length]
 plt.figure()
 plt.plot(t, data * 3 / 2**12)
 #plt.xlim([0, 0.1])
+plt.xlabel("Time [s]")
+plt.ylabel("Amplitude")
+plt.title("Time-Domain Signal")
+plt.show()
+
+
+plt.figure()
+plt.plot(t, data * 3 / 2**12,linewidth=0.5)
+plt.xlim([5, 8])
+plt.ylim([-0.2,0.2])
 plt.xlabel("Time [s]")
 plt.ylabel("Amplitude")
 plt.title("Time-Domain Signal")
@@ -110,12 +120,3 @@ plt.xlabel("Frequency [Hz]")
 plt.ylabel("Intensity")
 plt.title("Frequency Spectrum")
 plt.show()
-#%%
-from scipy import signal
-b = [1,0,0,0,0,0,-1]
-a = 1
-w,h = signal.freqz(b, a, worN=512, fs=fs)
-
-plt.figure()
-plt.plot(w,(abs(h)))
-

@@ -19,17 +19,20 @@ port = "/dev/ttyACM0" #Needs to be looked up using dmesg | grep tty
 UART_BUFFER_SIZE = 16
 UART_BYTE_SIZE = UART_BUFFER_SIZE * 4
 MAX_SAMPLES = 2000
+DECIMATION_FACTOR = 4
+UPDATE_CONSTANT = 100/DECIMATION_FACTOR
 sample_number = 0 #Used for real-time plotting
 x_points = collections.deque(maxlen = 1000) #For real-time plotting
 y_points = collections.deque(maxlen = 1000) #For real-time plotting
 update = 0
-filename = "newboard_undrivencable.txt"
+
+filename = "Just testing.txt"
 input = int(input("Mode 1 or 2?: "))
 match input:
     case 1:
-        MAX_SAMPLES = 10000
+        MAX_SAMPLES = 10000/DECIMATION_FACTOR
     case 2:
-        MAX_SAMPLES = 50000
+        MAX_SAMPLES = 50000/DECIMATION_FACTOR
 if(input == 2):
     plt.ion()
     fig, ax = plt.subplots()
@@ -61,7 +64,7 @@ with open(filename, 'w') as file:
                 y_points.append(value)
                 update = update + 1
                 sample_number = sample_number + 1
-                if(update == 100):
+                if(update == UPDATE_CONSTANT):
                     update = 0
                     line.set_xdata(x_points)
                     line.set_ydata(y_points)
@@ -75,7 +78,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load data
-data = np.loadtxt("newboard_undrivencable.txt")
+data = np.loadtxt("Just testing.txt")
 
 data_length = len(data)
 fs = 1000  # Sampling frequency
@@ -120,3 +123,5 @@ plt.xlabel("Frequency [Hz]")
 plt.ylabel("Intensity")
 plt.title("Frequency Spectrum")
 plt.show()
+#%%
+de_init(stm)

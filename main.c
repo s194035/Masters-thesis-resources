@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "arm_math.h"
+#include "fir_coefficients.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -33,9 +34,23 @@
 /* USER CODE BEGIN PD */
 #define BUFFER_SIZE 32
 #define HALF_BUFFER_SIZE (BUFFER_SIZE / 2)
-#define FILTER_ORDER 6
-#define FILTER_LENGTH (FILTER_ORDER+1)
-#define FIR_LENGTH (HALF_BUFFER_SIZE + FILTER_LENGTH - 1)
+#define DECIMATION_FACTOR 4
+#define HALF_BUFFER_SIZE_DECIMATED (HALF_BUFFER_SIZE/DECIMATION_FACTOR)
+
+#define IIR_FILTER_ORDER 6 //remember to change this
+#define IIR_NUM_STAGES (IIR_FILTER_ORDER / 2)
+
+#define FIR_FILTER_ORDER 1000
+#define FIR_FILTER_LENGTH (FIR_FILTER_ORDER+1)
+#define FIR_LENGTH (HALF_BUFFER_SIZE_DECIMATED + FIR_FILTER_LENGTH - 1)
+
+#define WINDOW_LENGTH 32
+#define PAN_THOMPKINS_FIR_FILTER_LENGTH 5
+#define PAN_THOMPKINS_FIR_LENGTH (HALF_BUFFER_SIZE_DECIMATED + PAN_THOMPKINS_FIR_FILTER_LENGTH - 1)
+#define PAN_THOMPKINS_NUM_STAGES 4
+
+#define ADC_CONVERSION_FACTOR 0.00073260073
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,17 +68,57 @@ UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
 uint8_t c[1] = {0};
-uint32_t MAX_SAMPLES = 4000;
+uint32_t MAX_SAMPLES = 10000; //Initial value has no effect
 volatile uint16_t adc_data[BUFFER_SIZE] = {0};
 volatile float32_t uart_data0[HALF_BUFFER_SIZE] = {0};
+volatile float32_t uart_data0_downsampled[HALF_BUFFER_SIZE_DECIMATED] = {0};
+volatile float32_t pan_thompkins0[HALF_BUFFER_SIZE_DECIMATED] = {0};
+volatile float32_t pan_thompkins1[HALF_BUFFER_SIZE_DECIMATED] = {0};
 volatile uint8_t transmit_flag = 0;
 volatile uint32_t timer2_counter = 0;
-float32_t fir_coeffs[FILTER_LENGTH] = {1,0,0,0,0,0,-1}; //6th order comb filter
-//float32_t fir_coeffs[FILTER_LENGTH] = {1}; //1st order all-pass filter
+uint16_t window_index = 0;
+uint16_t sum_index = 0;
+float32_t window_sum[HALF_BUFFER_SIZE_DECIMATED] = {0};
+float32_t window_elements[2*WINDOW_LENGTH] = {0};
+uint32_t window_fill_counter = 0;
+
+//FIR filtering stuff
 float32_t fir_state[FIR_LENGTH] = {0};
-float32_t fir_in0[HALF_BUFFER_SIZE] = {0};
-float32_t fir_in1[HALF_BUFFER_SIZE] = {0};
+float32_t fir_in0[HALF_BUFFER_SIZE_DECIMATED] = {0};
 arm_fir_instance_f32 fir0;
+
+
+/*
+//Every coefficient has been normalized to a0. The array stores b10, b11, b12, a11, a12, ...
+//Coefficients in SOS form. Remember, MATLAB puts a minus sign in front of a coefficients. Just negate them.
+float32_t iir_coeffs[5*NUM_STAGES] = { 1.000000000000000, -2.000000000000000, 1.000000000000000,   1.9878958, -0.9879351,
+									   1.000000000000000, -2.000000000000000, 1.000000000000000,   1.9911143, -0.9911535,
+									   1.000000000000000, -1.999969278284963, 0.999980865437720,   1.9967135, -0.9967529};
+
+float32_t iir_state0[2*NUM_STAGES] = {0}; //For DF1 we need 4*numstages, but for DF2T we need 2*numstages
+*/
+
+float32_t iir_butterworth_coeffs[5*IIR_NUM_STAGES] = {0.0010516, 0.0021033, 0.0010516, 0.8402869, -0.1883452,
+												  	  1.0000000, 2.0000000, 1.0000000, 0.9428090, -0.3333333,
+													  1.0000000, 2.0000000, 1.0000000, 1.1954340, -0.6905989};
+float32_t iir_butterworth_state[2*IIR_NUM_STAGES] = {0};
+float32_t iir_in0[HALF_BUFFER_SIZE] = {0};
+float32_t iir_in1[HALF_BUFFER_SIZE] = {0};
+arm_biquad_cascade_df2T_instance_f32 iir0;
+
+float32_t iir_pan_thompkins_bp[5*PAN_THOMPKINS_NUM_STAGES] = {
+										1.8321602e-04, 3.6643204e-04, 1.8321602e-04, 1.6776208, -0.7465797,
+										1.0000000,	   2.0000000,	  1.0000000,     1.8128196,	-0.8389382,
+										1.0000000,	  -2.0000000,	  1.0000000,	 1.7450038,	-0.8690063,
+										1.0000000,	  -2.0000000,	  1.0000000,	 1.9344329,	-0.9507427};
+float32_t iir_pan_thompkins_bp_state[2*4] = {0};
+arm_biquad_cascade_df2T_instance_f32 iir_pan_thompkins;
+
+//float32_t fir_derivative_coeffs[5] = {-31.250000000000000,	-62.500000000000000,	0,	62.500000000000000,	31.250000000000000};
+float32_t fir_derivative_coeffs[5] = {-1,	-2,	0,	2,	1};
+float32_t fir_derivative_state[PAN_THOMPKINS_FIR_LENGTH] = {0};
+arm_fir_instance_f32 fir_pan_thompkins;
+
 
 /* USER CODE END PV */
 
@@ -84,30 +139,62 @@ static void MX_USART1_UART_Init(void);
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc){
 	transmit_flag = (1 << 0);
 	for(int i = 0; i < HALF_BUFFER_SIZE; i++){
-		fir_in0[i] = (float32_t)adc_data[i];
+		iir_in0[i] = (float32_t)adc_data[i] * ADC_CONVERSION_FACTOR;
 	}
 }
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
 	transmit_flag = (1 << 1);
 	for(int i = HALF_BUFFER_SIZE; i < BUFFER_SIZE; i++){
-		fir_in1[i-HALF_BUFFER_SIZE] = (float32_t)adc_data[i];
+		iir_in1[i-HALF_BUFFER_SIZE] = (float32_t)adc_data[i] * ADC_CONVERSION_FACTOR;
 	}
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	timer2_counter++;
 }
-
-//ChatGPT generated function
+//Reverse array in place
 void reverse_array(float32_t arr[], int size) {
-	int temp;
+	float32_t temp;
+	int last_index = size - 1;
 	for (int i = 0; i < size / 2; i++) {
-		// Swap elements
 		temp = arr[i];
-		arr[i] = arr[size - 1 - i];
-		arr[size - 1 - i] = temp;
+		arr[i] = arr[last_index - i];
+		arr[last_index - i] = temp;
 	}
 }
+
+
+void decimate(float32_t source[], float32_t dest[], int size){
+	for(int i = 0; i < size/DECIMATION_FACTOR; i++){
+		dest[i] = source[i*DECIMATION_FACTOR];
+	}
+}
+
+void square(float32_t source[], int size){
+	for(int i = 0; i < size; i++){
+		source[i] = (source[i] * source[i]);
+	}
+}
+
+void fill_window32(float32_t input[]){
+	for(int i = 0; i < 4; i++){
+		window_elements[window_index] = input[i];
+		window_index = (window_index + 1) % 2*WINDOW_LENGTH;
+	}
+	window_fill_counter++;
+}
+
+void sliding_sum32(){
+	for(int i = 0; i < HALF_BUFFER_SIZE_DECIMATED; i++){
+		float32_t sum = 0;
+		for(int j = 0; j < WINDOW_LENGTH; j++){
+			sum_index = (window_index + i + j) % 2*WINDOW_LENGTH;
+			sum += window_elements[sum_index];
+		}
+		window_sum[i] = (float32_t)1/WINDOW_LENGTH * sum;
+	}
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -143,15 +230,24 @@ int main(void)
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  reverse_array(fir_coeffs, FILTER_LENGTH);
-  arm_fir_init_f32(&fir0, FILTER_LENGTH, fir_coeffs, fir_state, HALF_BUFFER_SIZE);
+
+  //Regular signal processing
+  reverse_array(fir_coeffs, FIR_FILTER_LENGTH);
+  arm_biquad_cascade_df2T_init_f32(&iir0, IIR_NUM_STAGES, iir_butterworth_coeffs, iir_butterworth_state);
+  arm_fir_init_f32(&fir0, FIR_FILTER_LENGTH, fir_coeffs, fir_state, HALF_BUFFER_SIZE_DECIMATED);
+
+  //Pan-thompkins
+  reverse_array(fir_derivative_coeffs, HALF_BUFFER_SIZE_DECIMATED + 5 - 1);
+  arm_biquad_cascade_df2T_init_f32(&iir_pan_thompkins,PAN_THOMPKINS_NUM_STAGES, iir_pan_thompkins_bp, iir_pan_thompkins_bp_state);
+  arm_fir_init_f32(&fir_pan_thompkins, PAN_THOMPKINS_FIR_FILTER_LENGTH, fir_derivative_coeffs, fir_derivative_state, HALF_BUFFER_SIZE_DECIMATED);
+
   HAL_UART_Receive(&huart1, c, sizeof(char), HAL_MAX_DELAY); //Wait to receive start from python
   switch(c[0]){
   	  case 1: //Are we in "writing to file" mode?
-  		  MAX_SAMPLES = 4000;
+  		  MAX_SAMPLES = 10000; //Remember to change this
   		  break;
   	  case 2: //Or are we in "real-time plotting" mode?
-  		  MAX_SAMPLES = 100000;
+  		  MAX_SAMPLES = 50000;
   		  break;
   }
   HAL_ADC_Start_DMA(&hadc1, (uint8_t*)adc_data, BUFFER_SIZE);
@@ -165,13 +261,35 @@ int main(void)
 	  switch(transmit_flag){
 	  	  case 1: //Transmit buffer0
 	  		  transmit_flag = 0;
-	  		  arm_fir_f32(&fir0, fir_in0, uart_data0, HALF_BUFFER_SIZE);
-	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0, sizeof(float)*HALF_BUFFER_SIZE);
+	  		  arm_biquad_cascade_df2T_f32(&iir0, iir_in0, uart_data0, HALF_BUFFER_SIZE);
+	  		  decimate(uart_data0, fir_in0, HALF_BUFFER_SIZE);
+	  		  arm_fir_f32(&fir0, fir_in0, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
+	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+
+	  		  //Pan.thompkins
+	  		  arm_biquad_cascade_df2T_f32(&iir_pan_thompkins, uart_data0_downsampled, pan_thompkins0, HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering
+	  		  arm_fir_f32(&fir_pan_thompkins, pan_thompkins0, pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED); //Derivative
+	  		  square(pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED);
+	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)pan_thompkins1, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+	  		  fill_window32(pan_thompkins1);
+	  		  sliding_sum32();
+	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)window_sum, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
 	  		  break;
 	  	  case 2: //Transmit buffer1
 	  		  transmit_flag = 0;
-	  		  arm_fir_f32(&fir0, fir_in1, uart_data0, HALF_BUFFER_SIZE);
-	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0, sizeof(float)*HALF_BUFFER_SIZE);
+	  		  arm_biquad_cascade_df2T_f32(&iir0, iir_in1, uart_data0, HALF_BUFFER_SIZE);
+	  		  decimate(uart_data0, fir_in0, HALF_BUFFER_SIZE);
+	  		  arm_fir_f32(&fir0, fir_in0, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
+	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+
+	  		  //Pan.thompkins
+	  		  arm_biquad_cascade_df2T_f32(&iir_pan_thompkins, uart_data0_downsampled, pan_thompkins0, HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering
+	  		  arm_fir_f32(&fir_pan_thompkins, pan_thompkins0, pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED); //Derivative
+	  		  square(pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED);
+	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)pan_thompkins1, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+	  		  fill_window32(pan_thompkins1);
+	  		  sliding_sum32();
+	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)window_sum, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
 	  		  break;
 	  	  default:
 	  }

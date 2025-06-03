@@ -17,7 +17,7 @@ def de_init(ser: serial.Serial):
 
 port = "/dev/ttyACM0" #Needs to be looked up using dmesg | grep tty
 #port = "/dev/ttyUSB0" #Now we use USB to uart converter
-RECIEVE_HEART_RATE = False
+RECIEVE_HEART_RATE = True
 DECIMATION_FACTOR = 4
 UART_BUFFER_SIZE = int(16/DECIMATION_FACTOR)
 if(RECIEVE_HEART_RATE):
@@ -33,13 +33,13 @@ update = 0
 heart_rate_counter = 0
 
 filename = "Just testing.txt"
-input = int(input("Mode 1 or 2?: "))
-match input:
+mode = int(input("Mode 1 or 2?: "))
+match mode:
     case 1:
         MAX_SAMPLES = 10000/DECIMATION_FACTOR
     case 2:
         MAX_SAMPLES = 50000/DECIMATION_FACTOR
-if(input == 2):
+if(mode == 2):
     plt.ion()
     fig, ax = plt.subplots()
     line, = ax.plot([], [], 'b-',linewidth=0.5)
@@ -47,12 +47,12 @@ if(input == 2):
 
 stm = init(port)
 stm.flush()
-stm.write(bytes([input]))
+stm.write(bytes([mode]))
+input_number = 1
 #For receiving multiple floats and store in a file
 with open(filename, 'w') as file:
     counter = 0
     while(counter < MAX_SAMPLES):
-        input_number = 1
         data = stm.read(UART_BYTE_SIZE)
         counter = counter + UART_BUFFER_SIZE
         if len(data) != UART_BYTE_SIZE:
@@ -62,32 +62,35 @@ with open(filename, 'w') as file:
         chunks = [data[i:i+4] for i in range(0, len(data), 4)]
         for i, chunk in enumerate(chunks):
             value = struct.unpack('f', chunk)[0] #Convert 4 bytes into their floating point representation
-            if(input == 1): #Mode 1 we write to a file
+            if(mode == 1): #Mode 1 we write to a file
                 file.write(f"{value}\n")
                 
-            if(input == 2): #Mode 2 we plot in real time. This code is taken from chatGPT
-                x_points.append(sample_number)
-                y_points.append(value)
-                update = update + 1
-                sample_number = sample_number + 1
-                if(update == UPDATE_CONSTANT):
-                    update = 0
-                    line.set_xdata(x_points)
-                    line.set_ydata(y_points)
-                    ax.relim()
-                    ax.autoscale_view()
-                    plt.draw()
-                    plt.pause(0.01)
-                    """
-                    elif(input == 2 and input_number == UART_BUFFER_SIZE):
-                        heart_rate_counter = heart_rate_counter + 1
-                        if(heart_rate_counter >= 20):
-                            heart_rate_counter = 0
-                            print(f"Heart rate: {value}\n")
-                input_number = input_number + 1
-                """
+            if(mode == 2): #Mode 2 we plot in real time. This code is taken from chatGPT
+                if(input_number <= 4):
+                    x_points.append(sample_number)
+                    y_points.append(value)
+                    update = update + 1
+                    sample_number = sample_number + 1
+                    if(update == UPDATE_CONSTANT):
+                        update = 0
+                        line.set_xdata(x_points)
+                        line.set_ydata(y_points)
+                        ax.relim()
+                        ax.autoscale_view()
+                        plt.draw()
+                        plt.pause(0.01)
+                elif (input_number == 5):
+                    heart_rate_counter += 1
+                    if(heart_rate_counter >= 200):
+                        heart_rate_counter = 0
+                        value = int(value)
+                        print(f"Heart rate: {value} beats/minute")
+                input_number += 1
+                if(input_number > 5):
+                    input_number = 1
 de_init(stm)
 #%% ChatGPT generated code to see spectrum and time-domain signal
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -137,5 +140,6 @@ plt.xlabel("Frequency [Hz]")
 plt.ylabel("Intensity")
 plt.title("Frequency Spectrum")
 plt.show()
+"""
 #%%
 de_init(stm)

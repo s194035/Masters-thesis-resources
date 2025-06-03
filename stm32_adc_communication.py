@@ -54,7 +54,7 @@ with open(filename, 'w') as file:
     counter = 0
     while(counter < MAX_SAMPLES):
         data = stm.read(UART_BYTE_SIZE)
-        counter = counter + UART_BUFFER_SIZE
+        counter = counter + UART_BUFFER_SIZE - 1 # -1 to account for the beats/minute number
         if len(data) != UART_BYTE_SIZE:
             stm.flush()
             continue
@@ -66,7 +66,7 @@ with open(filename, 'w') as file:
                 file.write(f"{value}\n")
                 
             if(mode == 2): #Mode 2 we plot in real time. This code is taken from chatGPT
-                if(input_number <= 4):
+                if(input_number <= 4): #We only plot the first 4 values of each batch
                     x_points.append(sample_number)
                     y_points.append(value)
                     update = update + 1
@@ -79,7 +79,7 @@ with open(filename, 'w') as file:
                         ax.autoscale_view()
                         plt.draw()
                         plt.pause(0.01)
-                elif (input_number == 5):
+                elif (input_number == 5): #5th value is the heart rate
                     heart_rate_counter += 1
                     if(heart_rate_counter >= 200):
                         heart_rate_counter = 0
@@ -88,6 +88,8 @@ with open(filename, 'w') as file:
                 input_number += 1
                 if(input_number > 5):
                     input_number = 1
+de_init(stm)
+#%%
 de_init(stm)
 #%% ChatGPT generated code to see spectrum and time-domain signal
 """
@@ -141,5 +143,3 @@ plt.ylabel("Intensity")
 plt.title("Frequency Spectrum")
 plt.show()
 """
-#%%
-de_init(stm)

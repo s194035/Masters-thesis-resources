@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-#This script fits together with "Sampling" stm32 project.
+#This script fits together with "sample_filter_transmit" stm32 project.
+#Never use serial.readline()
 
 import serial
 import struct
@@ -14,17 +15,21 @@ def init(port, baud: int = 115200):
 def de_init(ser: serial.Serial):
     ser.close()
 
-port = "/dev/ttyACM0" #Needs to be looked up using dmesg | grep tty
+port = "/dev/ttyACM1" #Needs to be looked up using dmesg | grep tty
 #port = "/dev/ttyUSB0" #Now we use USB to uart converter
-UART_BUFFER_SIZE = 16
-UART_BYTE_SIZE = UART_BUFFER_SIZE * 4
-MAX_SAMPLES = 2000
+RECIEVE_HEART_RATE = False
 DECIMATION_FACTOR = 4
+UART_BUFFER_SIZE = int(16/DECIMATION_FACTOR)
+if(RECIEVE_HEART_RATE):
+        UART_BUFFER_SIZE = UART_BUFFER_SIZE + 1
+UART_BYTE_SIZE = int(UART_BUFFER_SIZE * 4)
+MAX_SAMPLES = 2000
 UPDATE_CONSTANT = 100/DECIMATION_FACTOR
 sample_number = 0 #Used for real-time plotting
 x_points = collections.deque(maxlen = 1000) #For real-time plotting
 y_points = collections.deque(maxlen = 1000) #For real-time plotting
 update = 0
+heart_rate_counter = 0
 
 filename = "Just testing.txt"
 input = int(input("Mode 1 or 2?: "))
@@ -46,7 +51,7 @@ stm.write(bytes([input]))
 with open(filename, 'w') as file:
     counter = 0
     while(counter < MAX_SAMPLES):
-        #data = stm.readline(UART_BYTE_SIZE) #Don't use this function. I have spent 6 hours trying to get this damn function to work man.
+        input_number = 1
         data = stm.read(UART_BYTE_SIZE)
         counter = counter + UART_BUFFER_SIZE
         if len(data) != UART_BYTE_SIZE:
@@ -59,7 +64,7 @@ with open(filename, 'w') as file:
             if(input == 1): #Mode 1 we write to a file
                 file.write(f"{value}\n")
                 
-            if(input == 2): #Mode 2 we plot in real time. This code is taken from chatGPT
+            if(input == 2 and input_number != UART_BUFFER_SIZE): #Mode 2 we plot in real time. This code is taken from chatGPT
                 x_points.append(sample_number)
                 y_points.append(value)
                 update = update + 1
@@ -72,6 +77,12 @@ with open(filename, 'w') as file:
                     ax.autoscale_view()
                     plt.draw()
                     plt.pause(0.01)
+            elif(input == 2 and input_number == UART_BUFFER_SIZE):
+                heart_rate_counter = heart_rate_counter + 1
+                if(heart_rate_counter >= 20):
+                    heart_rate_counter = 0
+                    print(f"Heart rate: {value}\n")
+        input_number = input_number + 1
 de_init(stm)
 #%% ChatGPT generated code to see spectrum and time-domain signal
 import numpy as np

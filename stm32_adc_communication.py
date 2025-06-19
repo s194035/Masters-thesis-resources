@@ -14,31 +14,41 @@ def init(port, baud: int = 115200):
 
 def de_init(ser: serial.Serial):
     ser.close()
-
+#%%
 port = "/dev/ttyACM0" #Needs to be looked up using dmesg | grep tty
 #port = "/dev/ttyUSB0" #Now we use USB to uart converter
-RECIEVE_HEART_RATE = True
+RECIEVE_HEART_RATE = False
+USING_DECIMATION = False
+UART_BUFFER_SIZE = 16
 DECIMATION_FACTOR = 4
-UART_BUFFER_SIZE = int(16/DECIMATION_FACTOR)
+INPUT_NUMBER_COMPARISON = 3
+UPDATE_CONSTANT = 100
+if(USING_DECIMATION):
+    UART_BUFFER_SIZE = int(16/DECIMATION_FACTOR)
+    UPDATE_CONSTANT = 100/DECIMATION_FACTOR
 if(RECIEVE_HEART_RATE):
         UART_BUFFER_SIZE = UART_BUFFER_SIZE + 1
+        INPUT_NUMBER_COMPARISON = 4
 UART_BYTE_SIZE = int(UART_BUFFER_SIZE * 4)
 
 MAX_SAMPLES = 2000
-UPDATE_CONSTANT = 100/DECIMATION_FACTOR
 sample_number = 0 #Used for real-time plotting
 x_points = collections.deque(maxlen = 1000) #For real-time plotting
 y_points = collections.deque(maxlen = 1000) #For real-time plotting
 update = 0
 heart_rate_counter = 0
 
-filename = "Just testing.txt"
+filename = "Shielded_driven_IIR3.txt"
 mode = int(input("Mode 1 or 2?: "))
 match mode:
     case 1:
-        MAX_SAMPLES = 10000/DECIMATION_FACTOR
+        MAX_SAMPLES = 20000
+        if(USING_DECIMATION):
+            MAX_SAMPLES = 20000/DECIMATION_FACTOR
     case 2:
-        MAX_SAMPLES = 50000/DECIMATION_FACTOR
+        MAX_SAMPLES = 50000
+        if(USING_DECIMATION):
+            MAX_SAMPLES = 50000/DECIMATION_FACTOR
 if(mode == 2):
     plt.ion()
     fig, ax = plt.subplots()
@@ -54,7 +64,10 @@ with open(filename, 'w') as file:
     counter = 0
     while(counter < MAX_SAMPLES):
         data = stm.read(UART_BYTE_SIZE)
-        counter = counter + UART_BUFFER_SIZE - 1 # -1 to account for the beats/minute number
+        if(RECIEVE_HEART_RATE):
+            counter = counter + UART_BUFFER_SIZE - 1 # -1 to account for the beats/minute number
+        else:
+            counter = counter + UART_BUFFER_SIZE
         if len(data) != UART_BYTE_SIZE:
             stm.flush()
             continue
@@ -66,7 +79,7 @@ with open(filename, 'w') as file:
                 file.write(f"{value}\n")
                 
             if(mode == 2): #Mode 2 we plot in real time. This code is taken from chatGPT
-                if(input_number <= 4): #We only plot the first 4 values of each batch
+                if(input_number <= INPUT_NUMBER_COMPARISON): #We only plot the first 4 values of each batch
                     x_points.append(sample_number)
                     y_points.append(value)
                     update = update + 1
@@ -79,15 +92,20 @@ with open(filename, 'w') as file:
                         ax.autoscale_view()
                         plt.draw()
                         plt.pause(0.01)
-                elif (input_number == 5): #5th value is the heart rate
+                elif (input_number == (INPUT_NUMBER_COMPARISON + 1) and RECIEVE_HEART_RATE): #5th value is the heart rate
                     heart_rate_counter += 1
                     if(heart_rate_counter >= 200):
                         heart_rate_counter = 0
                         value = int(value)
                         print(f"Heart rate: {value} beats/minute")
                 input_number += 1
-                if(input_number > 5):
-                    input_number = 1
+                if(RECIEVE_HEART_RATE):
+                    if(input_number > (INPUT_NUMBER_COMPARISON+1)):
+                        input_number = 1
+                else:
+                    if(input_number > INPUT_NUMBER_COMPARISON):
+                            input_number = 1
+                    
 de_init(stm)
 #%%
 de_init(stm)

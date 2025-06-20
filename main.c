@@ -17,13 +17,14 @@
   */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#include "fir_coeffs_freq_sample.h"
+#include "fir_coeffs_equiripple.h"
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
 #include "arm_math.h"
-#include "fir_coeffs.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,20 +48,28 @@
 #define IIR_FILTER_ORDER 6
 #define IIR_NUM_STAGES (IIR_FILTER_ORDER / 2)
 
-//FIR defines
-#define FIR_FILTER_ORDER 1000
-#define FIR_FILTER_LENGTH (FIR_FILTER_ORDER+1)
-#define FIR_LENGTH (HALF_BUFFER_SIZE_DECIMATED + FIR_FILTER_LENGTH - 1)
+//FIR frequency sample defines
+#define FIR_FILTER_ORDER_FREQ_SAMPLE 1000
+#define FIR_FILTER_LENGTH_FREQ_SAMPLE (FIR_FILTER_ORDER_FREQ_SAMPLE +1)
+#define FIR_LENGTH_FREQ_SAMPLE (HALF_BUFFER_SIZE_DECIMATED + FIR_FILTER_LENGTH_FREQ_SAMPLE - 1)
+
+#define FIR_FILTER_ORDER_EQUIRIPPLE 2000
+#define FIR_FILTER_LENGTH_EQUIRIPPLE (FIR_FILTER_ORDER_EQUIRIPPLE + 1)
+#define FIR_LENGTH_EQUIRIPPLE (HALF_BUFFER_SIZE + FIR_FILTER_LENGTH_EQUIRIPPLE - 1)
 
 //Pan-thompkins defines
-#define WINDOW_LENGTH 38
+#define TIME_WINDOW 150 //150 ms
+#define WINDOW_LENGTH 150/(SAMPLING_FREQUENCY/1000)
 #define PAN_THOMPKINS_FIR_FILTER_LENGTH 5
 #define PAN_THOMPKINS_FIR_LENGTH (HALF_BUFFER_SIZE_DECIMATED + PAN_THOMPKINS_FIR_FILTER_LENGTH - 1)
 #define PAN_THOMPKINS_NUM_STAGES 4
 #define REFACTORY_PERIOD 200
 #define PEAK_STORAGE 1000
-#define R_PEAKS 16 //Should be 8, but testing other values
+#define R_PEAKS 8 //Should be 8, but testing other values
 
+//Masks
+#define DECIMATION 1
+#define HEART_RATE_TRANSMIT 3
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -77,9 +86,13 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
-uint8_t c[1] = {0};
-uint32_t MAX_SAMPLES = 10000; //Initial value has no effect
-volatile uint16_t adc_data[BUFFER_SIZE] = {0};
+uint8_t c = 0;
+uint8_t mode_flag = 0;
+uint32_t MAX_SAMPLES = 0;
+volatile uint16_t adc_data[BUFFER_SIZE] = {0}; //DMA buffer
+volatile float32_t data_buffer0[HALF_BUFFER_SIZE] = {0}; //Storing first half of ADC conversions
+volatile float32_t data_buffer1[HALF_BUFFER_SIZE] = {0}; //Storing last half of ADC conversions
+
 volatile float32_t uart_data0[HALF_BUFFER_SIZE] = {0};
 volatile float32_t uart_data1[HALF_BUFFER_SIZE] = {0};
 volatile float32_t uart_data0_downsampled[HALF_BUFFER_SIZE_DECIMATED] = {0};
@@ -93,7 +106,7 @@ volatile float32_t uart_ma_hr_data[HALF_BUFFER_SIZE_DECIMATED + 1] = {0};
 float32_t ma_output[HALF_BUFFER_SIZE_DECIMATED];
 
 //Peak detection
-uint32_t rpeak_index[PEAK_STORAGE] = {0};
+uint32_t r_peak_index[PEAK_STORAGE] = {0};
 float32_t r_peak_interval[R_PEAKS] = {0};
 uint8_t r_index = 0;
 float32_t r_peak_interval_average = 0;
@@ -102,12 +115,15 @@ float32_t beats_per_minute = 0;
 float32_t THRESHOLD1I = 0;
 
 //FIR filtering stuff
-float32_t fir_state[FIR_LENGTH] = {0};
-float32_t fir_in0[HALF_BUFFER_SIZE_DECIMATED] = {0};
+float32_t fir_state_freq_sample[FIR_LENGTH_FREQ_SAMPLE] = {0};
+float32_t fir_in_freq_sample[HALF_BUFFER_SIZE_DECIMATED] = {0};
+
+float32_t fir_state_equiripple[FIR_LENGTH_EQUIRIPPLE] = {0};
+float32_t fir_in_equiripple[HALF_BUFFER_SIZE] = {0};
 arm_fir_instance_f32 fir0;
 
 
-
+/*
 //Every coefficient has been normalized to a0. The array stores b10, b11, b12, a11, a12, ...
 //Coefficients in SOS form. Remember, MATLAB puts a minus sign in front of a coefficients. Just negate them.
 float32_t iir_coeffs[5*IIR_NUM_STAGES] = { 1.000000000000000, -2.000000000000000, 1.000000000000000,   1.9878958, -0.9879351,
@@ -115,14 +131,15 @@ float32_t iir_coeffs[5*IIR_NUM_STAGES] = { 1.000000000000000, -2.000000000000000
 									   1.000000000000000, -1.999969278284963, 0.999980865437720,   1.9967135, -0.9967529};
 
 float32_t iir_state0[2*IIR_NUM_STAGES] = {0}; //For DF1 we need 4*numstages, but for DF2T we need 2*numstages
+*/
 
 
 float32_t iir_butterworth_coeffs[5*IIR_NUM_STAGES] = {0.0010516, 0.0021033, 0.0010516, 0.8402869, -0.1883452,
 												  	  1.0000000, 2.0000000, 1.0000000, 0.9428090, -0.3333333,
 													  1.0000000, 2.0000000, 1.0000000, 1.1954340, -0.6905989};
 float32_t iir_butterworth_state[2*IIR_NUM_STAGES] = {0};
-float32_t iir_in0[HALF_BUFFER_SIZE] = {0};
-float32_t iir_in1[HALF_BUFFER_SIZE] = {0};
+float32_t iir_out0[HALF_BUFFER_SIZE] = {0};
+float32_t iir_out1[HALF_BUFFER_SIZE] = {0};
 arm_biquad_cascade_df2T_instance_f32 iir0;
 
 float32_t iir_pan_thompkins_bp[5*PAN_THOMPKINS_NUM_STAGES] = {
@@ -158,13 +175,13 @@ static void MX_USART1_UART_Init(void);
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc){
 	transmit_flag = (1 << 0);
 	for(int i = 0; i < HALF_BUFFER_SIZE; i++){
-		iir_in0[i] = (float32_t)adc_data[i] * ADC_CONVERSION_FACTOR;
+		data_buffer0[i] = (float32_t)adc_data[i] * ADC_CONVERSION_FACTOR;
 	}
 }
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
 	transmit_flag = (1 << 1);
 	for(int i = HALF_BUFFER_SIZE; i < BUFFER_SIZE; i++){
-		iir_in1[i-HALF_BUFFER_SIZE] = (float32_t)adc_data[i] * ADC_CONVERSION_FACTOR;
+		data_buffer1[i-HALF_BUFFER_SIZE] = (float32_t)adc_data[i] * ADC_CONVERSION_FACTOR;
 	}
 }
 
@@ -232,7 +249,7 @@ bool peak_detection(float32_t* input_samples, int size){
 			if(time_diff >= REFACTORY_PERIOD){
 				if(peak > THRESHOLD1I){
 					peak_detected = true;
-					rpeak_index[j] = timer2_counter;
+					r_peak_index[j] = timer2_counter;
 					j++;
 					last_peak_index = timer2_counter;
 					SPKI = (float32_t)0.125 * peak + (float32_t)0.875*SPKI;
@@ -261,7 +278,7 @@ void collect(float32_t* arr, int size, float32_t val){
 	for(int i = 0; i < size; i++){
 		uart_ma_hr_data[i] = arr[i];
 	}
-	uart_ma_hr_data[size] = val; //Remove division, just testing
+	uart_ma_hr_data[size] = val;
 }
 
 
@@ -302,25 +319,52 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_UART_Receive(&huart1, &c, sizeof(char), HAL_MAX_DELAY); //Wait to receive decimation information from python
+  switch(c){
+  	  case 1: //Don't use decimation
+  		  mode_flag &= ~(1 << 0);
+  		  break;
+  	  case 2: //Use decimation
+  		  mode_flag |= (1 << 0);
+  		  break;
+  }
+  HAL_UART_Receive(&huart1, &c, sizeof(char), HAL_MAX_DELAY); //Wait to receive heart rate information from python
+  switch(c){
+  	  case 1: //Don't measure heart rate
+  		  mode_flag &= ~(1 << 1);
+  		  break;
+  	  case 2: //Measure heart rate
+  		  mode_flag |= (1 << 1);
+  		  break;
+  }
+  HAL_UART_Receive(&huart1, &c, sizeof(char), HAL_MAX_DELAY); //Wait to receive sampling mode from python
+  switch(c){
+  	  case 1: //Are we in "writing to file" mode?
+  		  MAX_SAMPLES = 20000;
+  		  break;
+  	  case 2: //Or are we in "real-time plotting" mode?
+  		  MAX_SAMPLES = 50000;
+  		  break;
+  }
+
   //Regular signal processing
-  reverse_array(fir_coeffs, FIR_FILTER_LENGTH);
-  arm_biquad_cascade_df2T_init_f32(&iir0, IIR_NUM_STAGES, iir_coeffs, iir_state0); //Remember to change this
-  arm_fir_init_f32(&fir0, FIR_FILTER_LENGTH, fir_coeffs, fir_state, HALF_BUFFER_SIZE_DECIMATED);
+  if(mode_flag & DECIMATION){
+	  arm_biquad_cascade_df2T_init_f32(&iir0, IIR_NUM_STAGES, iir_butterworth_coeffs, iir_butterworth_state); //Lowpass filter for decimation
+	  reverse_array(fir_coeffs_freq_sample, FIR_FILTER_LENGTH_FREQ_SAMPLE); //Coefficients must be reversed to use library functions
+	  arm_fir_init_f32(&fir0, FIR_FILTER_LENGTH_FREQ_SAMPLE, fir_coeffs_freq_sample, fir_state_freq_sample, HALF_BUFFER_SIZE_DECIMATED); //FIR filter used with decimation
+  }
+  else{
+	  reverse_array(fir_coeffs_equiripple, FIR_FILTER_LENGTH_EQUIRIPPLE); //Coefficients must be reversed to use library functions
+	  arm_fir_init_f32(&fir0, FIR_FILTER_LENGTH_EQUIRIPPLE, fir_coeffs_equiripple, fir_state_equiripple, HALF_BUFFER_SIZE); //FIR filter used without decimation
+  }
+
 
   //Pan-thompkins
   reverse_array(fir_derivative_coeffs, HALF_BUFFER_SIZE_DECIMATED + 5 - 1);
   arm_biquad_cascade_df2T_init_f32(&iir_pan_thompkins,PAN_THOMPKINS_NUM_STAGES, iir_pan_thompkins_bp, iir_pan_thompkins_bp_state);
   arm_fir_init_f32(&fir_pan_thompkins, PAN_THOMPKINS_FIR_FILTER_LENGTH, fir_derivative_coeffs, fir_derivative_state, HALF_BUFFER_SIZE_DECIMATED);
 
-  HAL_UART_Receive(&huart1, c, sizeof(char), HAL_MAX_DELAY); //Wait to receive start from python
-  switch(c[0]){
-  	  case 1: //Are we in "writing to file" mode?
-  		  MAX_SAMPLES = 20000; //Remember to change this
-  		  break;
-  	  case 2: //Or are we in "real-time plotting" mode?
-  		  MAX_SAMPLES = 50000;
-  		  break;
-  }
+
   HAL_ADC_Start_DMA(&hadc1, (uint8_t*)adc_data, BUFFER_SIZE);
   HAL_TIM_Base_Start_IT(&htim2);
   /* USER CODE END 2 */
@@ -332,14 +376,21 @@ int main(void)
 	  switch(transmit_flag){
 	  	  case 1: //Transmit buffer0
 	  		  transmit_flag = 0;
-	  		  arm_biquad_cascade_df2T_f32(&iir0, iir_in0, uart_data0, HALF_BUFFER_SIZE);
-	  		  HAL_UART_Transmit_IT(&huart1, uart_data0, sizeof(uart_data0));
-
-	  		  //FIR and decimate scheme
+	  		  if(mode_flag & DECIMATION){
+	  			  //FIR and decimate scheme
+		  		  arm_biquad_cascade_df2T_f32(&iir0, data_buffer0, iir_out0, HALF_BUFFER_SIZE);
+		  		  decimate(iir_out0, fir_in_freq_sample, HALF_BUFFER_SIZE);
+		  		  arm_fir_f32(&fir0, fir_in_freq_sample, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
+		  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+	  		  }
+	  		  else{
+	  			  arm_fir_f32(&fir0, data_buffer0, uart_data0, HALF_BUFFER_SIZE);
+	  			  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0, sizeof(uart_data0));
+	  		  }
 	  		  //arm_biquad_cascade_df2T_f32(&iir0, iir_in0, uart_data0, HALF_BUFFER_SIZE);
-	  		  //decimate(uart_data0, fir_in0, HALF_BUFFER_SIZE);
-	  		  //arm_fir_f32(&fir0, fir_in0, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
-	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+	  		  //HAL_UART_Transmit_IT(&huart1, uart_data0, sizeof(uart_data0));
+
+
 	  		  /*
 	  		  //Pan.thompkins
 	  		  arm_biquad_cascade_df2T_f32(&iir_pan_thompkins, uart_data0_downsampled, pan_thompkins0, HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering
@@ -357,14 +408,20 @@ int main(void)
 	  		  break;
 	  	  case 2: //Transmit buffer1
 	  		  transmit_flag = 0;
-	  		  arm_biquad_cascade_df2T_f32(&iir0, iir_in1, uart_data1, HALF_BUFFER_SIZE);
-	  		  HAL_UART_Transmit_IT(&huart1, uart_data1, sizeof(uart_data1));
+	  		  if(mode_flag & DECIMATION){
+	  			  //FIR and decimate scheme
+		  		  arm_biquad_cascade_df2T_f32(&iir0, data_buffer1, iir_out1, HALF_BUFFER_SIZE);
+		  		  decimate(iir_out1, fir_in_freq_sample, HALF_BUFFER_SIZE);
+		  		  arm_fir_f32(&fir0, fir_in_freq_sample, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
+		  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+	  		  }
+	  		  else{
+	  			  arm_fir_f32(&fir0, data_buffer1, uart_data1, HALF_BUFFER_SIZE);
+	  			  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data1, sizeof(uart_data1));
+	  		  }
 
-	  		  //Fir and decimate scheme
-	  		  //arm_biquad_cascade_df2T_f32(&iir0, iir_in1, uart_data0, HALF_BUFFER_SIZE);
-	  		  //decimate(uart_data0, fir_in0, HALF_BUFFER_SIZE);
-	  		  //arm_fir_f32(&fir0, fir_in0, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
-	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+	  		  //arm_biquad_cascade_df2T_f32(&iir0, iir_in0, uart_data0, HALF_BUFFER_SIZE);
+	  		  //HAL_UART_Transmit_IT(&huart1, uart_data0, sizeof(uart_data0));
 	  		  /*
 	  		  //Pan.thompkins
 	  		  arm_biquad_cascade_df2T_f32(&iir_pan_thompkins, uart_data0_downsampled, pan_thompkins0, HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering

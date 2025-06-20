@@ -33,7 +33,7 @@ heart_rate_counter = 0
 
 stm = init(port)
 stm.flush()
-filename = "Just testing.txt"
+filename = "Square_wave_out.txt"
 
 
 mode1 = int(input("Normal mode (1) or downsample mode (2)?: "))
@@ -53,7 +53,7 @@ match mode2:
         if(using_decimation):
             INPUT_NUMBER_COMPARISON = 4
         else:
-            INPUT_NUMBER_COMPARISON = 32
+            INPUT_NUMBER_COMPARISON = 16
 stm.write(bytes([mode2]))
 
 
@@ -130,5 +130,5 @@ with open(filename, 'w') as file:
                             input_number = 1
                     
 de_init(stm)
-#%%
+#%%½
 de_init(stm)

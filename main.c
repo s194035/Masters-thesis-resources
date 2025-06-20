@@ -59,17 +59,23 @@
 
 //Pan-thompkins defines
 #define TIME_WINDOW 150 //150 ms
-#define WINDOW_LENGTH 150/(SAMPLING_FREQUENCY/1000)
+#define WINDOW_LENGTH 150 //150 samples for fs = 1000 Hz
+#define WINDOW_LENGTH_DECIMATED 38 //38 samples for fs = 250 Hz
+
+
 #define PAN_THOMPKINS_FIR_FILTER_LENGTH 5
-#define PAN_THOMPKINS_FIR_LENGTH (HALF_BUFFER_SIZE_DECIMATED + PAN_THOMPKINS_FIR_FILTER_LENGTH - 1)
+#define PAN_THOMPKINS_FIR_LENGTH (HALF_BUFFER_SIZE + PAN_THOMPKINS_FIR_FILTER_LENGTH - 1)
+#define PAN_THOMPKINS_FIR_LENGTH_DECIMATED (HALF_BUFFER_SIZE_DECIMATED + PAN_THOMPKINS_FIR_FILTER_LENGTH - 1)
+
 #define PAN_THOMPKINS_NUM_STAGES 4
+
 #define REFACTORY_PERIOD 200
 #define PEAK_STORAGE 1000
-#define R_PEAKS 8 //Should be 8, but testing other values
+#define R_PEAKS 16 //Should be 8, but testing other values
 
 //Masks
-#define DECIMATION 1
-#define HEART_RATE_TRANSMIT 3
+#define DECIMATION 0b00000001
+#define HEART_RATE_TRANSMIT 0b00000010
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -93,17 +99,26 @@ volatile uint16_t adc_data[BUFFER_SIZE] = {0}; //DMA buffer
 volatile float32_t data_buffer0[HALF_BUFFER_SIZE] = {0}; //Storing first half of ADC conversions
 volatile float32_t data_buffer1[HALF_BUFFER_SIZE] = {0}; //Storing last half of ADC conversions
 
-volatile float32_t uart_data0[HALF_BUFFER_SIZE] = {0};
-volatile float32_t uart_data1[HALF_BUFFER_SIZE] = {0};
-volatile float32_t uart_data0_downsampled[HALF_BUFFER_SIZE_DECIMATED] = {0};
-volatile float32_t pan_thompkins0[HALF_BUFFER_SIZE_DECIMATED] = {0};
-volatile float32_t pan_thompkins1[HALF_BUFFER_SIZE_DECIMATED] = {0};
+volatile float32_t uart_data0[HALF_BUFFER_SIZE] = {0}; //For normal transmission
+volatile float32_t uart_data1[HALF_BUFFER_SIZE] = {0}; //For normal transmission
+volatile float32_t uart_data0_downsampled[HALF_BUFFER_SIZE_DECIMATED] = {0}; //For downsampled transmission
+volatile float32_t uart_data1_downsampled[HALF_BUFFER_SIZE_DECIMATED] = {0}; //For downsampled transmission
+
+volatile float32_t pan_thompkins0[HALF_BUFFER_SIZE] = {0};
+volatile float32_t pan_thompkins1[HALF_BUFFER_SIZE] = {0};
+volatile float32_t pan_thompkins_decimated0[HALF_BUFFER_SIZE_DECIMATED] = {0};
+volatile float32_t pan_thompkins_decimated1[HALF_BUFFER_SIZE_DECIMATED] = {0};
+
 volatile uint8_t transmit_flag = 0;
 volatile uint32_t timer2_counter = 0;
-volatile float32_t uart_ma_hr_data[HALF_BUFFER_SIZE_DECIMATED + 1] = {0};
+volatile float32_t uart_ma_hr_data[HALF_BUFFER_SIZE + 1] = {0};
+volatile float32_t uart_ma_hr_data_decimated[HALF_BUFFER_SIZE_DECIMATED + 1] = {0};
 
 //Moving average
-float32_t ma_output[HALF_BUFFER_SIZE_DECIMATED];
+float32_t ma_samples[WINDOW_LENGTH] = {0};
+float32_t ma_samples_decimated[WINDOW_LENGTH_DECIMATED] = {0};
+float32_t ma_output[HALF_BUFFER_SIZE];
+float32_t ma_output_decimated[HALF_BUFFER_SIZE_DECIMATED];
 
 //Peak detection
 uint32_t r_peak_index[PEAK_STORAGE] = {0};
@@ -121,6 +136,9 @@ float32_t fir_in_freq_sample[HALF_BUFFER_SIZE_DECIMATED] = {0};
 float32_t fir_state_equiripple[FIR_LENGTH_EQUIRIPPLE] = {0};
 float32_t fir_in_equiripple[HALF_BUFFER_SIZE] = {0};
 arm_fir_instance_f32 fir0;
+
+uint32_t debug_counter0 = 0;
+uint32_t debug_counter1 = 0;
 
 
 /*
@@ -142,6 +160,10 @@ float32_t iir_out0[HALF_BUFFER_SIZE] = {0};
 float32_t iir_out1[HALF_BUFFER_SIZE] = {0};
 arm_biquad_cascade_df2T_instance_f32 iir0;
 
+
+
+
+
 float32_t iir_pan_thompkins_bp[5*PAN_THOMPKINS_NUM_STAGES] = {
 										1.8321602e-04, 3.6643204e-04, 1.8321602e-04, 1.6776208, -0.7465797,
 										1.0000000,	   2.0000000,	  1.0000000,     1.8128196,	-0.8389382,
@@ -153,6 +175,7 @@ arm_biquad_cascade_df2T_instance_f32 iir_pan_thompkins;
 //float32_t fir_derivative_coeffs[5] = {-31.250000000000000,	-62.500000000000000,	0,	62.500000000000000,	31.250000000000000};
 float32_t fir_derivative_coeffs[5] = {-1,	-2,	0,	2,	1};
 float32_t fir_derivative_state[PAN_THOMPKINS_FIR_LENGTH] = {0};
+float32_t fir_derivative_state_decimated[PAN_THOMPKINS_FIR_LENGTH_DECIMATED] = {0};
 arm_fir_instance_f32 fir_pan_thompkins;
 
 
@@ -189,7 +212,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 	timer2_counter++;
 }
 //Reverse array in place
-void reverse_array(float32_t arr[], int size) {
+static void reverse_array(float32_t arr[], int size) {
 	float32_t temp;
 	int last_index = size - 1;
 	for (int i = 0; i < size / 2; i++) {
@@ -200,39 +223,56 @@ void reverse_array(float32_t arr[], int size) {
 }
 
 
-void decimate(float32_t source[], float32_t dest[], int size){
+static void decimate(float32_t source[], float32_t dest[], int size){
 	for(int i = 0; i < size/DECIMATION_FACTOR; i++){
 		dest[i] = source[i*DECIMATION_FACTOR];
 	}
 }
 
-void square(float32_t source[], int size){
+static void square(float32_t source[], int size){
 	for(int i = 0; i < size; i++){
 		source[i] = (source[i] * source[i]);
 	}
 }
 
-//We process HALF_BUFFER_SIZE_DECIMATED samples at a time, hence the need for the for loop.
-void moving_average(float32_t* input_samples, int size){
+//We process HALF_BUFFER_SIZE or HALF_BUFFER_SIZE_DECIMATED samples at a time, hence the need for the for loop.
+static void moving_average(float32_t* input_samples, int size){
 	static uint32_t ma_counter = 0;
 	static uint16_t ma_index = 0;
 	static float32_t ma = 0;
-	static float32_t ma_samples[WINDOW_LENGTH] = {0};
-	for(int i = 0; i < size; i++){
-		if(ma_counter < WINDOW_LENGTH){
-			ma = (float32_t) (input_samples[i] + ma_counter*ma)/(ma_counter + 1);
+
+	if(mode_flag & DECIMATION){
+		for(int i = 0; i < size; i++){
+			if(ma_counter < WINDOW_LENGTH_DECIMATED){
+				ma = (float32_t) (input_samples[i] + ma_counter*ma)/(ma_counter + 1);
+			}
+			else{
+				ma = ma + (input_samples[i] - (float32_t)ma_samples_decimated[ma_index])/WINDOW_LENGTH_DECIMATED;
+			}
+			ma_output_decimated[i] = ma; //Store the output in a buffer to be sent via uart.
+			ma_samples_decimated[ma_index] = input_samples[i]; //Store the input sample
+			ma_counter++;
+			ma_index = ma_counter % WINDOW_LENGTH_DECIMATED; //Update index as to know which samples is the oldest.
 		}
-		else{
-			ma = ma + (input_samples[i] - (float32_t)ma_samples[ma_index])/WINDOW_LENGTH;
+	}
+	else{
+		for(int i = 0; i < size; i++){
+			if(ma_counter < WINDOW_LENGTH){
+				ma = (float32_t) (input_samples[i] + ma_counter*ma)/(ma_counter + 1);
+			}
+			else{
+				ma = ma + (input_samples[i] - (float32_t)ma_samples[ma_index])/WINDOW_LENGTH;
+			}
+			ma_output[i] = ma; //Store the output in a buffer to be sent via uart.
+			ma_samples[ma_index] = input_samples[i]; //Store the input sample
+			ma_counter++;
+			ma_index = ma_counter % WINDOW_LENGTH; //Update index as to know which samples is the oldest.
 		}
-		ma_output[i] = ma; //Store the output in a buffer to be sent via uart.
-		ma_samples[ma_index] = input_samples[i]; //Store the input sample
-		ma_counter++;
-		ma_index = ma_counter % WINDOW_LENGTH; //Update index as to know which samples is the oldest.
 	}
 }
 
-bool peak_detection(float32_t* input_samples, int size){
+//We process HALF_BUFFER_SIZE or HALF_BUFFER_SIZE_DECIMATED samples at a time, hence the need for the for loop.
+static bool peak_detection(float32_t* input_samples, int size){
 	static float32_t middle = 0;
 	static float32_t left = 0;
 	static uint32_t last_peak_index = 0;
@@ -265,7 +305,12 @@ bool peak_detection(float32_t* input_samples, int size){
 				else{
 					NPKI = (float32_t)0.125 * peak + (float32_t)0.875 * NPKI;
 				}
-				THRESHOLD1I = NPKI + (float32_t)0.75*(SPKI - NPKI); //Try to tune the multiplication value
+				if(mode_flag & DECIMATION){
+					THRESHOLD1I = NPKI + (float32_t)0.5*(SPKI - NPKI); //Try to tune the multiplication value
+				}
+				else{
+					THRESHOLD1I = NPKI + (float32_t)0.5*(SPKI - NPKI); //Try to tune the multiplication value
+				}
 			}
 		}
 		left = middle;
@@ -274,11 +319,22 @@ bool peak_detection(float32_t* input_samples, int size){
 	return peak_detected;
 }
 
-void collect(float32_t* arr, int size, float32_t val){
+//Appends the heart rate onto an array of length HALF_BUFFER_SIZE or HALF_BUFFER_SIZE_DECIMATED
+static void collect(float32_t* arr, int size, float32_t val){
 	for(int i = 0; i < size; i++){
-		uart_ma_hr_data[i] = arr[i];
+		if(mode_flag & DECIMATION){
+			uart_ma_hr_data_decimated[i] = arr[i];
+		}
+		else{
+			uart_ma_hr_data[i] = arr[i];
+		}
 	}
-	uart_ma_hr_data[size] = val;
+	if(mode_flag & DECIMATION){
+		uart_ma_hr_data_decimated[size] = val;
+	}
+	else{
+		uart_ma_hr_data[size] = val;
+	}
 }
 
 
@@ -358,11 +414,17 @@ int main(void)
 	  arm_fir_init_f32(&fir0, FIR_FILTER_LENGTH_EQUIRIPPLE, fir_coeffs_equiripple, fir_state_equiripple, HALF_BUFFER_SIZE); //FIR filter used without decimation
   }
 
-
   //Pan-thompkins
-  reverse_array(fir_derivative_coeffs, HALF_BUFFER_SIZE_DECIMATED + 5 - 1);
-  arm_biquad_cascade_df2T_init_f32(&iir_pan_thompkins,PAN_THOMPKINS_NUM_STAGES, iir_pan_thompkins_bp, iir_pan_thompkins_bp_state);
-  arm_fir_init_f32(&fir_pan_thompkins, PAN_THOMPKINS_FIR_FILTER_LENGTH, fir_derivative_coeffs, fir_derivative_state, HALF_BUFFER_SIZE_DECIMATED);
+  if(mode_flag & DECIMATION){
+	  reverse_array(fir_derivative_coeffs, 5);
+	  arm_biquad_cascade_df2T_init_f32(&iir_pan_thompkins,PAN_THOMPKINS_NUM_STAGES, iir_pan_thompkins_bp, iir_pan_thompkins_bp_state);
+	  arm_fir_init_f32(&fir_pan_thompkins, PAN_THOMPKINS_FIR_FILTER_LENGTH, fir_derivative_coeffs, fir_derivative_state_decimated, HALF_BUFFER_SIZE_DECIMATED);
+  }
+  else{
+	  reverse_array(fir_derivative_coeffs,5);
+	  arm_biquad_cascade_df2T_init_f32(&iir_pan_thompkins,PAN_THOMPKINS_NUM_STAGES, iir_pan_thompkins_bp, iir_pan_thompkins_bp_state);
+	  arm_fir_init_f32(&fir_pan_thompkins, PAN_THOMPKINS_FIR_FILTER_LENGTH, fir_derivative_coeffs, fir_derivative_state, HALF_BUFFER_SIZE);
+  }
 
 
   HAL_ADC_Start_DMA(&hadc1, (uint8_t*)adc_data, BUFFER_SIZE);
@@ -381,30 +443,50 @@ int main(void)
 		  		  arm_biquad_cascade_df2T_f32(&iir0, data_buffer0, iir_out0, HALF_BUFFER_SIZE);
 		  		  decimate(iir_out0, fir_in_freq_sample, HALF_BUFFER_SIZE);
 		  		  arm_fir_f32(&fir0, fir_in_freq_sample, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
-		  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+		  		  if(!(mode_flag & HEART_RATE_TRANSMIT)){
+		  			  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(uart_data0_downsampled));
+		  		  }
 	  		  }
 	  		  else{
 	  			  arm_fir_f32(&fir0, data_buffer0, uart_data0, HALF_BUFFER_SIZE);
-	  			  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0, sizeof(uart_data0));
+	  			  if(!(mode_flag & HEART_RATE_TRANSMIT)){
+	  				  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0, sizeof(uart_data0));
+	  			  }
 	  		  }
+
 	  		  //arm_biquad_cascade_df2T_f32(&iir0, iir_in0, uart_data0, HALF_BUFFER_SIZE);
 	  		  //HAL_UART_Transmit_IT(&huart1, uart_data0, sizeof(uart_data0));
 
+	  		  //Pan-Thompkins
+	  		  if(mode_flag & HEART_RATE_TRANSMIT){
+	  			  if(mode_flag & DECIMATION){
+					arm_biquad_cascade_df2T_f32(&iir_pan_thompkins,uart_data0_downsampled, pan_thompkins_decimated0, HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering
+					arm_fir_f32(&fir_pan_thompkins, pan_thompkins_decimated0, pan_thompkins_decimated1, HALF_BUFFER_SIZE_DECIMATED); //Derivative
+					square(pan_thompkins_decimated1, HALF_BUFFER_SIZE_DECIMATED);
+					moving_average(pan_thompkins_decimated1, HALF_BUFFER_SIZE_DECIMATED);
+					if (timer2_counter > 5000) {
+						peak_detected = peak_detection(ma_output_decimated,HALF_BUFFER_SIZE_DECIMATED);
+					}
+					collect(uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED, beats_per_minute);
+					//HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output)); //Send Pan-thompkins waveform
+					HAL_UART_Transmit_IT(&huart1, (uint8_t*) uart_ma_hr_data_decimated, sizeof(uart_ma_hr_data_decimated)); //Send ECG signal with heart rate
+	  			  }
 
-	  		  /*
-	  		  //Pan.thompkins
-	  		  arm_biquad_cascade_df2T_f32(&iir_pan_thompkins, uart_data0_downsampled, pan_thompkins0, HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering
-	  		  arm_fir_f32(&fir_pan_thompkins, pan_thompkins0, pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED); //Derivative
-	  		  square(pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED);
-	  		  moving_average(pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED);
-	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output));
-	  		  if(timer2_counter > 5000){
-	  			peak_detected = peak_detection(ma_output, HALF_BUFFER_SIZE_DECIMATED);
+	  			  else{
+	  				arm_biquad_cascade_df2T_f32(&iir_pan_thompkins,uart_data0, pan_thompkins0, HALF_BUFFER_SIZE); //Bandpass filtering
+	  				arm_fir_f32(&fir_pan_thompkins, pan_thompkins0, pan_thompkins1, HALF_BUFFER_SIZE); //Derivative
+	  				square(pan_thompkins1, HALF_BUFFER_SIZE);
+	  				moving_average(pan_thompkins1, HALF_BUFFER_SIZE);
+	  				if (timer2_counter > 5000) {
+	  				peak_detected = peak_detection(ma_output,HALF_BUFFER_SIZE);
+	  				}
+	  				collect(uart_data0, HALF_BUFFER_SIZE, beats_per_minute);
+	  				//HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output)); //Send Pan-thompkins waveform
+	  				HAL_UART_Transmit_IT(&huart1, (uint8_t*) uart_ma_hr_data, sizeof(uart_ma_hr_data)); //Send ECG signal with heart rate
+	  				debug_counter0++;
+	  			  }
 	  		  }
-	  		  collect(ma_output, HALF_BUFFER_SIZE_DECIMATED, beats_per_minute);
-	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output));
-	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_ma_hr_data, sizeof(uart_ma_hr_data));
-	  		  */
+
 	  		  break;
 	  	  case 2: //Transmit buffer1
 	  		  transmit_flag = 0;
@@ -412,31 +494,52 @@ int main(void)
 	  			  //FIR and decimate scheme
 		  		  arm_biquad_cascade_df2T_f32(&iir0, data_buffer1, iir_out1, HALF_BUFFER_SIZE);
 		  		  decimate(iir_out1, fir_in_freq_sample, HALF_BUFFER_SIZE);
-		  		  arm_fir_f32(&fir0, fir_in_freq_sample, uart_data0_downsampled, HALF_BUFFER_SIZE_DECIMATED);
-		  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data0_downsampled, sizeof(float32_t)*HALF_BUFFER_SIZE_DECIMATED);
+		  		  arm_fir_f32(&fir0, fir_in_freq_sample, uart_data1_downsampled, HALF_BUFFER_SIZE_DECIMATED);
+		  		  if(!(mode_flag & HEART_RATE_TRANSMIT)){
+		  			  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data1_downsampled, sizeof(uart_data1_downsampled));
+		  		  }
 	  		  }
 	  		  else{
 	  			  arm_fir_f32(&fir0, data_buffer1, uart_data1, HALF_BUFFER_SIZE);
-	  			  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data1, sizeof(uart_data1));
+	  			  if(!(mode_flag & HEART_RATE_TRANSMIT)){
+	  				  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_data1, sizeof(uart_data1));
+	  			  }
 	  		  }
 
 	  		  //arm_biquad_cascade_df2T_f32(&iir0, iir_in0, uart_data0, HALF_BUFFER_SIZE);
 	  		  //HAL_UART_Transmit_IT(&huart1, uart_data0, sizeof(uart_data0));
-	  		  /*
-	  		  //Pan.thompkins
-	  		  arm_biquad_cascade_df2T_f32(&iir_pan_thompkins, uart_data0_downsampled, pan_thompkins0, HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering
-	  		  arm_fir_f32(&fir_pan_thompkins, pan_thompkins0, pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED); //Derivative
-	  		  square(pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED);
-	  		  moving_average(pan_thompkins1, HALF_BUFFER_SIZE_DECIMATED);
-	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output));
-	  		  if(timer2_counter > 5000){
-	  			peak_detected = peak_detection(ma_output, HALF_BUFFER_SIZE_DECIMATED);
-	  		  }
-	  		  collect(ma_output, HALF_BUFFER_SIZE_DECIMATED, beats_per_minute);
-	  		  //HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output));
-	  		  HAL_UART_Transmit_IT(&huart1, (uint8_t*)uart_ma_hr_data, sizeof(uart_ma_hr_data));
-	  		  */
-	  		  break;
+
+
+	  		 //Pan-Thompkins
+			if (mode_flag & HEART_RATE_TRANSMIT) {
+				if (mode_flag & DECIMATION) {
+					arm_biquad_cascade_df2T_f32(&iir_pan_thompkins,uart_data1_downsampled, pan_thompkins_decimated0,HALF_BUFFER_SIZE_DECIMATED); //Bandpass filtering
+					arm_fir_f32(&fir_pan_thompkins, pan_thompkins_decimated0,pan_thompkins_decimated1, HALF_BUFFER_SIZE_DECIMATED); //Derivative
+					square(pan_thompkins_decimated1, HALF_BUFFER_SIZE_DECIMATED);
+					moving_average(pan_thompkins_decimated1, HALF_BUFFER_SIZE_DECIMATED);
+					if (timer2_counter > 5000) {
+						peak_detected = peak_detection(ma_output_decimated,HALF_BUFFER_SIZE_DECIMATED);
+					}
+					collect(uart_data1_downsampled, HALF_BUFFER_SIZE_DECIMATED,beats_per_minute);
+					//HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output)); //Send Pan-thompkins waveform
+					HAL_UART_Transmit_IT(&huart1, (uint8_t*) uart_ma_hr_data_decimated,sizeof(uart_ma_hr_data_decimated)); //Send ECG signal with heart rate
+				}
+				else{
+					arm_biquad_cascade_df2T_f32(&iir_pan_thompkins,uart_data1, pan_thompkins0, HALF_BUFFER_SIZE); //Bandpass filtering
+					arm_fir_f32(&fir_pan_thompkins, pan_thompkins0, pan_thompkins1, HALF_BUFFER_SIZE); //Derivative
+					square(pan_thompkins1, HALF_BUFFER_SIZE);
+					moving_average(pan_thompkins1, HALF_BUFFER_SIZE);
+					if (timer2_counter > 5000) {
+					peak_detected = peak_detection(ma_output,HALF_BUFFER_SIZE);
+					}
+					collect(uart_data1, HALF_BUFFER_SIZE, beats_per_minute);
+					//HAL_UART_Transmit_IT(&huart1, (uint8_t*)ma_output, sizeof(ma_output)); //Send Pan-thompkins waveform
+					HAL_UART_Transmit_IT(&huart1, (uint8_t*) uart_ma_hr_data, sizeof(uart_ma_hr_data)); //Send ECG signal with heart rate
+					debug_counter1++;
+				}
+			}
+
+			break;
 	  	  default:
 	  }
 	  if(peak_detected){

@@ -33,7 +33,7 @@ heart_rate_counter = 0
 
 stm = init(port)
 stm.flush()
-filename = "Square_wave_out.txt"
+filename = "Sine_wave_out2.txt"
 
 
 mode1 = int(input("Normal mode (1) or downsample mode (2)?: "))
